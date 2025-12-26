@@ -1,2 +1,3 @@
 sentence_transformers
 einops
+pyobjc-framework-Contacts
