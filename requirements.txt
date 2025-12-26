@@ -1,1 +1,2 @@
-sqlite3
+sentence_transformers
+einops
