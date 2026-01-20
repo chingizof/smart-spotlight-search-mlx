@@ -2,11 +2,16 @@
 
 A local, privacy-first semantic search engine for macOS. Like Spotlight, but smarter — search your data using natural language queries instead of exact keywords. Everything runs on-device using Apple Silicon.
 
+## Demo
+
+![Demo](assets/demo.png)
+
 ## Features
 
 - **Semantic Search**: Find messages by meaning, not just keywords ("dinner plans" finds "let's grab food tonight")
+- **RAG Chat**: Ask questions about your messages using a local LLM (Llama 3.2)
 - **Privacy-First**: All data stays on your device. No cloud, no external APIs
-- **Apple Silicon Optimized**: Uses MLX and runs efficiently on M1/M2/M3 Macs
+- **Apple Silicon Optimized**: Runs efficiently on M1/M2/M3 Macs
 - **Incremental Indexing**: Only processes new messages on subsequent runs
 
 ## Currently Supported Data Sources
@@ -52,13 +57,32 @@ python data-ingestion/imessages.py --reset
 python data-ingestion/search.py "dinner plans"
 ```
 
+### 6. Chat with RAG (Optional)
+
+Requires [Ollama](https://ollama.ai/) to be installed and running:
+
+```bash
+# Install Ollama
+brew install ollama
+
+# Start Ollama server (in a separate terminal)
+ollama serve
+
+# Run the chat interface
+python data-ingestion/chat.py
+```
+
+The chat will automatically pull the `llama3.2` model on first run.
+
 ## Project Structure
 
 ```
 smart-spotlight-search-mlx/
 ├── data-ingestion/
 │   ├── imessages.py      # Index iMessages into LanceDB
-│   └── search.py         # Search the indexed messages
+│   ├── search.py         # Search the indexed messages
+│   └── chat.py           # RAG chat interface with Llama 3.2
+├── assets/               # Screenshots and demo images
 ├── chat-history/         # Your copied chat.db (gitignored)
 ├── lancedb/              # Vector database storage (gitignored)
 └── requirements.txt
@@ -68,11 +92,13 @@ smart-spotlight-search-mlx/
 
 - **Embedding Model**: [nomic-ai/nomic-embed-text-v1](https://huggingface.co/nomic-ai/nomic-embed-text-v1) (768 dimensions)
 - **Vector Database**: [LanceDB](https://lancedb.com/) (local, serverless)
+- **LLM**: [Llama 3.2 3B](https://ollama.com/library/llama3.2) via Ollama
 - **Contact Resolution**: Uses macOS Contacts framework to map phone numbers/emails to names
+- **Distance Metric**: Cosine similarity for semantic search
 
 ## Roadmap
 
-- [ ] Add local LLM for RAG-powered Q&A (answer questions about your messages)
+- [x] Add local LLM for RAG-powered Q&A
 - [ ] Add unit tests
 - [ ] Index additional data sources:
   - [ ] Local files (PDFs, documents, notes)

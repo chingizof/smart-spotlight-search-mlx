@@ -4,3 +4,4 @@ pyobjc-framework-Contacts
 lancedb
 pyarrow
 pandas
+ollama
