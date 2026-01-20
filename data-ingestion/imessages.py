@@ -5,10 +5,9 @@ import sys
 import time
 
 import Contacts
+import lancedb
 import pyarrow as pa
 from sentence_transformers import SentenceTransformer
-
-import lancedb
 
 # Check for --reset flag
 RESET = "--reset" in sys.argv
