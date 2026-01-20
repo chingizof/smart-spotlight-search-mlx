@@ -5,3 +5,5 @@ lancedb
 pyarrow
 pandas
 ollama
+ruff
+pytest

@@ -1,12 +1,14 @@
-import sqlite3
-import Contacts
-import re
 import datetime
-import time
+import re
+import sqlite3
 import sys
-import lancedb
+import time
+
+import Contacts
 import pyarrow as pa
 from sentence_transformers import SentenceTransformer
+
+import lancedb
 
 # Check for --reset flag
 RESET = "--reset" in sys.argv
@@ -165,4 +167,4 @@ else:
     print(f"\nCreated new table with {len(data)} embeddings")
 
 print(f"Total messages in database: {table.count_rows()}")
-print(f"Database location: ./lancedb/")
+print("Database location: ./lancedb/")
