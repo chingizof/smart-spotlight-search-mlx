@@ -16,18 +16,24 @@ RESET = "--reset" in sys.argv
 # --- 1. Build Contact Map ---
 contact_map = {}
 store = Contacts.CNContactStore.alloc().init()
-keys = [Contacts.CNContactGivenNameKey, Contacts.CNContactFamilyNameKey,
-        Contacts.CNContactPhoneNumbersKey, Contacts.CNContactEmailAddressesKey]
+keys = [
+    Contacts.CNContactGivenNameKey,
+    Contacts.CNContactFamilyNameKey,
+    Contacts.CNContactPhoneNumbersKey,
+    Contacts.CNContactEmailAddressesKey,
+]
 request = Contacts.CNContactFetchRequest.alloc().initWithKeysToFetch_(keys)
+
 
 def process_contact(c, stop):
     name = f"{c.givenName()} {c.familyName()}".strip() or "Unknown"
     for p in c.phoneNumbers():
-        digits = re.sub(r'\D', '', p.value().stringValue())
+        digits = re.sub(r"\D", "", p.value().stringValue())
         if len(digits) >= 10:
             contact_map[digits[-10:]] = name
     for e in c.emailAddresses():
         contact_map[e.value().lower()] = name
+
 
 store.enumerateContactsWithFetchRequest_error_usingBlock_(request, None, process_contact)
 
@@ -95,7 +101,7 @@ for i, row in enumerate(new_rows):
 
     # Resolve Name
     if handle_id:
-        key = re.sub(r'\D', '', handle_id)[-10:] if "@" not in handle_id else handle_id.lower()
+        key = re.sub(r"\D", "", handle_id)[-10:] if "@" not in handle_id else handle_id.lower()
         name = contact_map.get(key, "unknown")
     else:
         name = "Me"
@@ -105,12 +111,9 @@ for i, row in enumerate(new_rows):
     readable_date = datetime.datetime.fromtimestamp(unix_timestamp).isoformat()
 
     # Store metadata
-    metadata.append({
-        "text": text,
-        "timestamp": readable_date,
-        "sender_name": name,
-        "message_id": message_id
-    })
+    metadata.append(
+        {"text": text, "timestamp": readable_date, "sender_name": name, "message_id": message_id}
+    )
 
     # Prepare text for embedding
     content_to_embed = f"search_query: {name}: {text}"
@@ -131,10 +134,7 @@ start_time = time.time()
 
 batch_size = 32
 vectors = model.encode(
-    texts_to_embed,
-    batch_size=batch_size,
-    show_progress_bar=True,
-    convert_to_numpy=True
+    texts_to_embed, batch_size=batch_size, show_progress_bar=True, convert_to_numpy=True
 )
 
 elapsed = time.time() - start_time
@@ -143,19 +143,18 @@ print(f"Encoding completed in {elapsed:.1f}s ({len(texts_to_embed) / elapsed:.0f
 # Combine vectors with metadata
 data = []
 for i, vec in enumerate(vectors):
-    data.append({
-        "vector": vec.tolist(),
-        **metadata[i]
-    })
+    data.append({"vector": vec.tolist(), **metadata[i]})
 
 # --- 5. Create or Update LanceDB Table ---
-schema = pa.schema([
-    pa.field("vector", pa.list_(pa.float32(), 768)),
-    pa.field("text", pa.string()),
-    pa.field("timestamp", pa.string()),
-    pa.field("sender_name", pa.string()),
-    pa.field("message_id", pa.int64())
-])
+schema = pa.schema(
+    [
+        pa.field("vector", pa.list_(pa.float32(), 768)),
+        pa.field("text", pa.string()),
+        pa.field("timestamp", pa.string()),
+        pa.field("sender_name", pa.string()),
+        pa.field("message_id", pa.int64()),
+    ]
+)
 
 if table_exists:
     # Append new data to existing table

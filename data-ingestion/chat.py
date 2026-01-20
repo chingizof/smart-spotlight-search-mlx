@@ -4,6 +4,7 @@ from search import search
 # --- 1. Ensure model is available ---
 MODEL = "llama3.2"
 
+
 def ensure_model():
     """Pull model if not available locally."""
     try:
@@ -13,6 +14,7 @@ def ensure_model():
         print(f"Pulling '{MODEL}'... (this may take a few minutes)")
         ollama.pull(MODEL)
         print(f"Model '{MODEL}' ready")
+
 
 # --- 2. RAG prompt template ---
 def build_prompt(query: str, context: str) -> str:
@@ -27,6 +29,7 @@ Question: {query}
 
 Answer concisely based on the messages above."""
 
+
 # --- 3. Format search results as context ---
 def get_context(query: str) -> str:
     results = search(query)
@@ -39,20 +42,18 @@ def get_context(query: str) -> str:
 
     return "\n".join(context_lines)
 
+
 # --- 4. Chat with streaming ---
 def chat(query: str):
     context = get_context(query)
     prompt = build_prompt(query, context)
 
-    stream = ollama.chat(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        stream=True
-    )
+    stream = ollama.chat(model=MODEL, messages=[{"role": "user", "content": prompt}], stream=True)
 
     for chunk in stream:
         print(chunk["message"]["content"], end="", flush=True)
     print()  # newline after response
+
 
 # --- 5. Main loop ---
 if __name__ == "__main__":

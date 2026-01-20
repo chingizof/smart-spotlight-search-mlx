@@ -11,14 +11,17 @@ db = lancedb.connect(os.path.join(PROJECT_ROOT, "lancedb"))
 table = db.open_table("imessages")
 model = SentenceTransformer("nomic-ai/nomic-embed-text-v1", trust_remote_code=True)
 
+
 def search(query: str, limit: int = 5):
     """Search for messages similar to the query."""
     query_vector = model.encode(f"search_query: {query}")
     results = table.search(query_vector).metric("cosine").limit(limit).to_pandas()
     return results
 
+
 if __name__ == "__main__":
     import sys
+
     query = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "hello"
     print(f"Searching for: '{query}'\n")
 
