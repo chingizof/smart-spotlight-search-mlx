@@ -237,9 +237,7 @@ def convert_imessage_timestamp(raw_date: int) -> float:
     return (raw_date / 1_000_000_000) + 978307200
 
 
-def fetch_messages(
-    conn: sqlite3.Connection, after_rowid: int = 0
-) -> list[Message]:
+def fetch_messages(conn: sqlite3.Connection, after_rowid: int = 0) -> list[Message]:
     """Fetch messages from chat.db with chat association, optionally after a specific ROWID."""
     query = """
     SELECT
@@ -487,12 +485,8 @@ def main():
     parser.add_argument(
         "--reset", action="store_true", help="Drop existing table and reindex all messages"
     )
-    parser.add_argument(
-        "--search", type=str, help="Search for a memory after indexing"
-    )
-    parser.add_argument(
-        "--search-only", type=str, help="Only search (skip indexing)"
-    )
+    parser.add_argument("--search", type=str, help="Search for a memory after indexing")
+    parser.add_argument("--search-only", type=str, help="Only search (skip indexing)")
     parser.add_argument(
         "--skip-copy",
         action="store_true",
@@ -625,7 +619,9 @@ def main():
     )
 
     elapsed = time.time() - start_time
-    print(f"✓ Encoding completed in {elapsed:.1f}s ({len(texts_to_embed) / elapsed:.1f} chunks/sec)")
+    print(
+        f"✓ Encoding completed in {elapsed:.1f}s ({len(texts_to_embed) / elapsed:.1f} chunks/sec)"
+    )
 
     # === Prepare Data for LanceDB ===
     data = []
