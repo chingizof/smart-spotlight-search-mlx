@@ -1,5 +1,5 @@
 import ollama
-from search import search
+from imessages import search_memories
 
 # --- 1. Ensure model is available ---
 MODEL = "llama3.2"
@@ -20,27 +20,28 @@ def ensure_model():
 def build_prompt(query: str, context: str) -> str:
     return f"""You are a helpful assistant answering questions based on the user's personal message history.
 
-Use ONLY the following messages as context. If the answer isn't in the context, say "I couldn't find that in your messages."
+Use ONLY the following conversation snippets as context. If the answer isn't in the context, say "I couldn't find that in your messages."
 
 Context:
 {context}
 
 Question: {query}
 
-Answer concisely based on the messages above."""
+Answer concisely based on the conversations above."""
 
 
 # --- 3. Format search results as context ---
 def get_context(query: str) -> str:
-    results = search(query)
-    if results.empty:
+    results = search_memories(query, limit=5)
+    if not results:
         return "No relevant messages found."
 
-    context_lines = []
-    for _, row in results.iterrows():
-        context_lines.append(f"[{row['timestamp']}] {row['sender_name']}: {row['text']}")
+    context_blocks = []
+    for mem in results:
+        header = f"[{mem['start_time']} - {mem['end_time']}]"
+        context_blocks.append(f"{header}\n{mem['text']}")
 
-    return "\n".join(context_lines)
+    return "\n\n---\n\n".join(context_blocks)
 
 
 # --- 4. Chat with streaming ---
