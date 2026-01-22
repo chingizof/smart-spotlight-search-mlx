@@ -15,6 +15,7 @@ Features:
 import argparse
 import datetime
 import re
+import shutil
 import sqlite3
 import sys
 import time
@@ -28,7 +29,8 @@ from sentence_transformers import SentenceTransformer
 import lancedb
 
 # === Configuration ===
-CHAT_DB_PATH = Path.home() / "Library" / "Messages" / "chat.db"
+SYSTEM_CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
+LOCAL_CHAT_DB = Path("chat-history") / "chat.db"
 LANCEDB_PATH = "lancedb"
 TABLE_NAME = "imessages_chunked"
 EMBEDDING_MODEL = "nomic-ai/nomic-embed-text-v1"
@@ -139,30 +141,58 @@ class Chunk:
         return self.contact_map.get(key, msg.handle)
 
 
-def check_database_access() -> tuple[bool, str]:
+def copy_chat_database() -> tuple[bool, str]:
     """
-    Check if we can access the Messages database.
-    Returns (can_access, error_message).
+    Copy the system chat.db to a local directory for safe read-only access.
+    Returns (success, error_message).
     """
-    if not CHAT_DB_PATH.exists():
-        return False, f"Messages database not found at {CHAT_DB_PATH}"
+    # Create chat-history directory if it doesn't exist
+    LOCAL_CHAT_DB.parent.mkdir(parents=True, exist_ok=True)
+
+    # Check if system database exists
+    if not SYSTEM_CHAT_DB.exists():
+        return False, f"Messages database not found at {SYSTEM_CHAT_DB}"
 
     try:
-        # Try to open the database
-        conn = sqlite3.connect(f"file:{CHAT_DB_PATH}?mode=ro", uri=True)
+        # Try to copy the database (this requires Full Disk Access)
+        print(f"📋 Copying chat.db from {SYSTEM_CHAT_DB}...")
+        shutil.copy2(SYSTEM_CHAT_DB, LOCAL_CHAT_DB)
+
+        # Also copy the write-ahead log files if they exist (for consistency)
+        for suffix in ["-wal", "-shm"]:
+            wal_file = SYSTEM_CHAT_DB.with_suffix(SYSTEM_CHAT_DB.suffix + suffix)
+            if wal_file.exists():
+                shutil.copy2(wal_file, LOCAL_CHAT_DB.with_suffix(LOCAL_CHAT_DB.suffix + suffix))
+
+        print(f"✓ Database copied to {LOCAL_CHAT_DB}")
+        return True, ""
+
+    except PermissionError:
+        return False, (
+            "Cannot access Messages database. Please grant Full Disk Access:\n"
+            "  1. Open System Settings → Privacy & Security → Full Disk Access\n"
+            "  2. Add your terminal app (Terminal, iTerm2, VS Code, etc.)\n"
+            "  3. Restart your terminal and try again"
+        )
+    except Exception as e:
+        return False, f"Failed to copy database: {e}"
+
+
+def check_local_database() -> tuple[bool, str]:
+    """
+    Check if the local chat.db copy exists and is readable.
+    Returns (can_access, error_message).
+    """
+    if not LOCAL_CHAT_DB.exists():
+        return False, f"Local database not found at {LOCAL_CHAT_DB}. Run without --skip-copy first."
+
+    try:
+        conn = sqlite3.connect(f"file:{LOCAL_CHAT_DB}?mode=ro", uri=True)
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM message LIMIT 1")
         conn.close()
         return True, ""
     except sqlite3.OperationalError as e:
-        error_str = str(e)
-        if "unable to open database file" in error_str or "disk I/O error" in error_str:
-            return False, (
-                "Cannot access Messages database. Please grant Full Disk Access:\n"
-                "  1. Open System Settings → Privacy & Security → Full Disk Access\n"
-                "  2. Add your terminal app (Terminal, iTerm2, VS Code, etc.)\n"
-                "  3. Restart your terminal and try again"
-            )
         return False, f"Database error: {e}"
 
 
@@ -464,10 +494,9 @@ def main():
         "--search-only", type=str, help="Only search (skip indexing)"
     )
     parser.add_argument(
-        "--db-path",
-        type=str,
-        default=str(CHAT_DB_PATH),
-        help=f"Path to chat.db (default: {CHAT_DB_PATH})",
+        "--skip-copy",
+        action="store_true",
+        help="Skip copying chat.db (use existing local copy)",
     )
     args = parser.parse_args()
 
@@ -490,16 +519,20 @@ def main():
     print("iMessage Ingestion Pipeline")
     print("=" * 60)
 
-    db_path = Path(args.db_path)
-    if db_path != CHAT_DB_PATH:
-        print(f"\n📁 Using custom database: {db_path}")
+    # Copy or verify local database
+    if args.skip_copy:
+        print("\n📁 Using existing local database copy")
+        can_access, error = check_local_database()
+        if not can_access:
+            print(f"\n❌ {error}")
+            sys.exit(1)
+    else:
+        success, error = copy_chat_database()
+        if not success:
+            print(f"\n❌ {error}")
+            sys.exit(1)
 
-    can_access, error = check_database_access()
-    if not can_access:
-        print(f"\n❌ {error}")
-        sys.exit(1)
-
-    print(f"✓ Database accessible at {db_path}")
+    print(f"✓ Database ready at {LOCAL_CHAT_DB}")
 
     # === Load Contacts ===
     contact_map = load_contact_map()
@@ -516,7 +549,7 @@ def main():
         print(f"✓ Incremental mode: starting from ROWID {last_rowid}")
 
     # === Fetch Messages ===
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{LOCAL_CHAT_DB}?mode=ro", uri=True)
     messages = fetch_messages(conn, after_rowid=last_rowid)
     conn.close()
 
