@@ -14,6 +14,7 @@ Features:
 
 import argparse
 import datetime
+import lancedb
 import re
 import shutil
 import sqlite3
@@ -25,8 +26,6 @@ from typing import Optional
 
 import pyarrow as pa
 from sentence_transformers import SentenceTransformer
-
-import lancedb
 
 # === Configuration ===
 SYSTEM_CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"

@@ -1,8 +1,7 @@
 import os
 
-from sentence_transformers import SentenceTransformer
-
 import lancedb
+from sentence_transformers import SentenceTransformer
 
 # Connect to database (use absolute path relative to this script)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
