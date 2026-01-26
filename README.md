@@ -148,7 +148,7 @@ smart-spotlight-search-mlx/
 - [x] Add local LLM for RAG-powered Q&A
 - [x] Sliding window chunking for better context
 - [x] Per-conversation grouping
-- [ ] Add unit tests
+- [x] Add unit tests
 - [ ] Index additional data sources:
   - [ ] Local files (PDFs, documents, notes)
   - [ ] Calendar events
