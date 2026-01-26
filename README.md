@@ -159,6 +159,7 @@ smart-spotlight-search-mlx/
 - [ ] Add date/time filtering to search queries
 - [ ] Hybrid search (combine semantic + keyword matching)
 - [ ] Scheduled background indexing
+- [ ] Add Whatsapp, Telegram messengers
 
 ## License
 
