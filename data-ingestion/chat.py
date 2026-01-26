@@ -1,3 +1,5 @@
+import argparse
+
 import ollama
 from imessages import search_memories
 
@@ -31,8 +33,8 @@ Answer concisely based on the conversations above."""
 
 
 # --- 3. Format search results as context ---
-def get_context(query: str) -> str:
-    results = search_memories(query, limit=5)
+def get_context(query: str, after: str = None, before: str = None) -> str:
+    results = search_memories(query, limit=5, after=after, before=before)
     if not results:
         return "No relevant messages found."
 
@@ -45,8 +47,8 @@ def get_context(query: str) -> str:
 
 
 # --- 4. Chat with streaming ---
-def chat(query: str):
-    context = get_context(query)
+def chat(query: str, after: str = None, before: str = None):
+    context = get_context(query, after=after, before=before)
     prompt = build_prompt(query, context)
 
     stream = ollama.chat(model=MODEL, messages=[{"role": "user", "content": prompt}], stream=True)
@@ -58,8 +60,31 @@ def chat(query: str):
 
 # --- 5. Main loop ---
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="RAG Chat with iMessage history")
+    parser.add_argument(
+        "--after",
+        type=str,
+        help="Filter messages after this date. Accepts ISO format (YYYY-MM-DD) or "
+        "relative format (e.g., 'last 7 days', 'last week', 'yesterday')",
+    )
+    parser.add_argument(
+        "--before",
+        type=str,
+        help="Filter messages before this date. Accepts ISO format (YYYY-MM-DD) or "
+        "relative format (e.g., 'last 7 days', 'last week', 'yesterday')",
+    )
+    args = parser.parse_args()
+
     ensure_model()
-    print("\nRAG Chat (type 'quit' to exit)")
+
+    filter_info = []
+    if args.after:
+        filter_info.append(f"after: {args.after}")
+    if args.before:
+        filter_info.append(f"before: {args.before}")
+    filter_str = f" [{', '.join(filter_info)}]" if filter_info else ""
+
+    print(f"\nRAG Chat{filter_str} (type 'quit' to exit)")
     print("-" * 40)
 
     while True:
@@ -71,7 +96,7 @@ if __name__ == "__main__":
                 continue
 
             print("\nAssistant: ", end="")
-            chat(query)
+            chat(query, after=args.after, before=args.before)
 
         except KeyboardInterrupt:
             print("\nGoodbye!")

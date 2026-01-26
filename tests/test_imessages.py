@@ -7,12 +7,16 @@ Tests the core chunking logic:
 - Temporal blocking (>30 min gap starts new block)
 - Noise filtering (reactions, short messages excluded from embedding)
 - Sliding window overlap
+- Date filter parsing (relative and absolute formats)
 """
 
+import datetime
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
+
+import pytest
 
 # === Replicate core logic from imessages.py to avoid heavy imports ===
 # (pyarrow, sentence_transformers, lancedb are not needed for unit tests)
@@ -37,6 +41,69 @@ NOISE_PATTERNS = [
     r"^Questioned ",
 ]
 NOISE_REGEX = re.compile("|".join(NOISE_PATTERNS), re.IGNORECASE)
+
+# Relative time patterns for date parsing (replicated from imessages.py)
+RELATIVE_TIME_PATTERNS = {
+    r"last\s*(\d+)\s*days?": lambda m: datetime.timedelta(days=int(m.group(1))),
+    r"last\s*(\d+)\s*weeks?": lambda m: datetime.timedelta(weeks=int(m.group(1))),
+    r"last\s*(\d+)\s*months?": lambda m: datetime.timedelta(days=int(m.group(1)) * 30),
+    r"last\s*(\d+)\s*years?": lambda m: datetime.timedelta(days=int(m.group(1)) * 365),
+    r"last\s*week": lambda m: datetime.timedelta(weeks=1),
+    r"last\s*month": lambda m: datetime.timedelta(days=30),
+    r"last\s*year": lambda m: datetime.timedelta(days=365),
+    r"yesterday": lambda m: datetime.timedelta(days=1),
+    r"today": lambda m: datetime.timedelta(days=0),
+}
+
+
+def parse_date_filter(date_str: Union[str, datetime.datetime, None]) -> Optional[datetime.datetime]:
+    """
+    Parse a date filter string into a datetime object.
+
+    Supports:
+    - ISO format dates: "2024-01-15", "2024-01-15T14:30:00"
+    - Relative times: "last 7 days", "last week", "last month", "yesterday", "today"
+    - datetime objects (passed through)
+    - None (returns None)
+
+    Returns:
+        datetime object or None if input is None/empty
+    """
+    if date_str is None:
+        return None
+
+    if isinstance(date_str, datetime.datetime):
+        return date_str
+
+    if isinstance(date_str, datetime.date):
+        return datetime.datetime.combine(date_str, datetime.time.min)
+
+    date_str = date_str.strip().lower()
+    if not date_str:
+        return None
+
+    # Try relative time patterns
+    now = datetime.datetime.now()
+    for pattern, delta_func in RELATIVE_TIME_PATTERNS.items():
+        match = re.match(pattern, date_str, re.IGNORECASE)
+        if match:
+            delta = delta_func(match)
+            # For "after" filters, we want the start of the period
+            result = now - delta
+            # Return start of day for consistency
+            return result.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Try parsing as ISO format date/datetime
+    for fmt in ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d"]:
+        try:
+            return datetime.datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+
+    raise ValueError(
+        f"Cannot parse date '{date_str}'. Use ISO format (YYYY-MM-DD) or "
+        f"relative format (e.g., 'last 7 days', 'last week', 'yesterday')"
+    )
 
 
 @dataclass
@@ -515,3 +582,224 @@ class TestMessageFetching:
             assert msg.text is not None
             assert msg.timestamp > 0
             assert isinstance(msg.is_from_me, bool)
+
+
+class TestParseDateFilter:
+    """Test date filter parsing for search queries."""
+
+    def test_none_returns_none(self):
+        """None input should return None."""
+        assert parse_date_filter(None) is None
+
+    def test_empty_string_returns_none(self):
+        """Empty string should return None."""
+        assert parse_date_filter("") is None
+        assert parse_date_filter("   ") is None
+
+    def test_datetime_passthrough(self):
+        """datetime objects should be returned unchanged."""
+        dt = datetime.datetime(2024, 1, 15, 14, 30, 0)
+        result = parse_date_filter(dt)
+        assert result == dt
+
+    def test_date_converted_to_datetime(self):
+        """date objects should be converted to datetime at midnight."""
+        d = datetime.date(2024, 1, 15)
+        result = parse_date_filter(d)
+        assert result == datetime.datetime(2024, 1, 15, 0, 0, 0)
+
+    def test_iso_date_format(self):
+        """ISO date format (YYYY-MM-DD) should be parsed correctly."""
+        result = parse_date_filter("2024-01-15")
+        assert result == datetime.datetime(2024, 1, 15, 0, 0, 0)
+
+    def test_iso_datetime_format(self):
+        """ISO datetime format should be parsed correctly."""
+        result = parse_date_filter("2024-01-15T14:30:00")
+        assert result == datetime.datetime(2024, 1, 15, 14, 30, 0)
+
+    def test_iso_datetime_with_space(self):
+        """ISO datetime with space separator should be parsed correctly."""
+        result = parse_date_filter("2024-01-15 14:30:00")
+        assert result == datetime.datetime(2024, 1, 15, 14, 30, 0)
+
+    def test_slash_date_format(self):
+        """Date with slashes (YYYY/MM/DD) should be parsed correctly."""
+        result = parse_date_filter("2024/01/15")
+        assert result == datetime.datetime(2024, 1, 15, 0, 0, 0)
+
+    def test_relative_last_n_days(self):
+        """'last N days' should return approximately N days ago at start of day."""
+        now = datetime.datetime.now()
+        result = parse_date_filter("last 7 days")
+
+        # Result should be approximately 7 days ago
+        expected_approx = now - datetime.timedelta(days=7)
+        expected_start_of_day = expected_approx.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        assert result == expected_start_of_day
+        assert result.hour == 0
+        assert result.minute == 0
+        assert result.second == 0
+
+    def test_relative_last_n_days_singular(self):
+        """'last 1 day' should work (singular form)."""
+        now = datetime.datetime.now()
+        result = parse_date_filter("last 1 day")
+
+        expected_approx = now - datetime.timedelta(days=1)
+        expected_start_of_day = expected_approx.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        assert result == expected_start_of_day
+
+    def test_relative_last_week(self):
+        """'last week' should return 7 days ago at start of day."""
+        now = datetime.datetime.now()
+        result = parse_date_filter("last week")
+
+        expected_approx = now - datetime.timedelta(weeks=1)
+        expected_start_of_day = expected_approx.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        assert result == expected_start_of_day
+
+    def test_relative_last_month(self):
+        """'last month' should return 30 days ago at start of day."""
+        now = datetime.datetime.now()
+        result = parse_date_filter("last month")
+
+        expected_approx = now - datetime.timedelta(days=30)
+        expected_start_of_day = expected_approx.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        assert result == expected_start_of_day
+
+    def test_relative_last_n_weeks(self):
+        """'last N weeks' should return N*7 days ago."""
+        now = datetime.datetime.now()
+        result = parse_date_filter("last 2 weeks")
+
+        expected_approx = now - datetime.timedelta(weeks=2)
+        expected_start_of_day = expected_approx.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        assert result == expected_start_of_day
+
+    def test_relative_last_n_months(self):
+        """'last N months' should return N*30 days ago."""
+        now = datetime.datetime.now()
+        result = parse_date_filter("last 2 months")
+
+        expected_approx = now - datetime.timedelta(days=60)
+        expected_start_of_day = expected_approx.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        assert result == expected_start_of_day
+
+    def test_relative_yesterday(self):
+        """'yesterday' should return yesterday at start of day."""
+        now = datetime.datetime.now()
+        result = parse_date_filter("yesterday")
+
+        expected_approx = now - datetime.timedelta(days=1)
+        expected_start_of_day = expected_approx.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        assert result == expected_start_of_day
+
+    def test_relative_today(self):
+        """'today' should return today at start of day."""
+        now = datetime.datetime.now()
+        result = parse_date_filter("today")
+
+        expected_start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        assert result == expected_start_of_day
+
+    def test_case_insensitive_iso(self):
+        """ISO date parsing should work regardless of case in string."""
+        result1 = parse_date_filter("2024-01-15")
+        result2 = parse_date_filter("2024-01-15")
+        assert result1 == result2
+
+    def test_case_insensitive_relative(self):
+        """Relative date formats should be case insensitive."""
+        result_lower = parse_date_filter("last week")
+        result_upper = parse_date_filter("LAST WEEK")
+        result_mixed = parse_date_filter("Last Week")
+
+        # All should produce the same result
+        assert result_lower == result_upper == result_mixed
+
+    def test_whitespace_handling_iso(self):
+        """Extra whitespace around ISO dates should be handled gracefully."""
+        result = parse_date_filter("  2024-01-15  ")
+        assert result == datetime.datetime(2024, 1, 15, 0, 0, 0)
+
+    def test_whitespace_handling_relative(self):
+        """Extra whitespace in relative dates should be handled gracefully."""
+        # "last  week" with extra space should still work
+        result = parse_date_filter("last week")
+        now = datetime.datetime.now()
+        expected = (now - datetime.timedelta(weeks=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        assert result == expected
+
+    def test_invalid_format_raises_error(self):
+        """Invalid date formats should raise ValueError."""
+        with pytest.raises(ValueError) as exc_info:
+            parse_date_filter("not a date")
+        assert "Cannot parse date" in str(exc_info.value)
+
+        with pytest.raises(ValueError):
+            parse_date_filter("01-15-2024")  # US format not supported
+
+        with pytest.raises(ValueError):
+            parse_date_filter("January 15, 2024")  # Written format not supported
+
+    def test_relative_last_year(self):
+        """'last year' should return 365 days ago."""
+        now = datetime.datetime.now()
+        result = parse_date_filter("last year")
+
+        expected_approx = now - datetime.timedelta(days=365)
+        expected_start_of_day = expected_approx.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        assert result == expected_start_of_day
+
+    def test_relative_last_n_years(self):
+        """'last N years' should return N*365 days ago."""
+        now = datetime.datetime.now()
+        result = parse_date_filter("last 2 years")
+
+        expected_approx = now - datetime.timedelta(days=730)
+        expected_start_of_day = expected_approx.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        assert result == expected_start_of_day
+
+    def test_relative_results_are_at_start_of_day(self):
+        """All relative date results should be at the start of day (00:00:00)."""
+        relative_formats = [
+            "today",
+            "yesterday",
+            "last week",
+            "last month",
+            "last year",
+            "last 5 days",
+            "last 2 weeks",
+            "last 3 months",
+        ]
+
+        for fmt in relative_formats:
+            result = parse_date_filter(fmt)
+            assert result.hour == 0, f"'{fmt}' should have hour=0"
+            assert result.minute == 0, f"'{fmt}' should have minute=0"
+            assert result.second == 0, f"'{fmt}' should have second=0"
+            assert result.microsecond == 0, f"'{fmt}' should have microsecond=0"
+
+    def test_relative_ordering(self):
+        """Relative dates should be correctly ordered in time."""
+        today = parse_date_filter("today")
+        yesterday = parse_date_filter("yesterday")
+        last_week = parse_date_filter("last week")
+        last_month = parse_date_filter("last month")
+        last_year = parse_date_filter("last year")
+
+        assert today > yesterday
+        assert yesterday > last_week
+        assert last_week > last_month
+        assert last_month > last_year

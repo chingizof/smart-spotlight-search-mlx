@@ -22,7 +22,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import pyarrow as pa
 from sentence_transformers import SentenceTransformer
@@ -57,6 +57,69 @@ NOISE_PATTERNS = [
     r"^Questioned ",
 ]
 NOISE_REGEX = re.compile("|".join(NOISE_PATTERNS), re.IGNORECASE)
+
+# Relative time patterns for date parsing
+RELATIVE_TIME_PATTERNS = {
+    r"last\s*(\d+)\s*days?": lambda m: datetime.timedelta(days=int(m.group(1))),
+    r"last\s*(\d+)\s*weeks?": lambda m: datetime.timedelta(weeks=int(m.group(1))),
+    r"last\s*(\d+)\s*months?": lambda m: datetime.timedelta(days=int(m.group(1)) * 30),
+    r"last\s*(\d+)\s*years?": lambda m: datetime.timedelta(days=int(m.group(1)) * 365),
+    r"last\s*week": lambda m: datetime.timedelta(weeks=1),
+    r"last\s*month": lambda m: datetime.timedelta(days=30),
+    r"last\s*year": lambda m: datetime.timedelta(days=365),
+    r"yesterday": lambda m: datetime.timedelta(days=1),
+    r"today": lambda m: datetime.timedelta(days=0),
+}
+
+
+def parse_date_filter(date_str: Union[str, datetime.datetime, None]) -> Optional[datetime.datetime]:
+    """
+    Parse a date filter string into a datetime object.
+
+    Supports:
+    - ISO format dates: "2024-01-15", "2024-01-15T14:30:00"
+    - Relative times: "last 7 days", "last week", "last month", "yesterday", "today"
+    - datetime objects (passed through)
+    - None (returns None)
+
+    Returns:
+        datetime object or None if input is None/empty
+    """
+    if date_str is None:
+        return None
+
+    if isinstance(date_str, datetime.datetime):
+        return date_str
+
+    if isinstance(date_str, datetime.date):
+        return datetime.datetime.combine(date_str, datetime.time.min)
+
+    date_str = date_str.strip().lower()
+    if not date_str:
+        return None
+
+    # Try relative time patterns
+    now = datetime.datetime.now()
+    for pattern, delta_func in RELATIVE_TIME_PATTERNS.items():
+        match = re.match(pattern, date_str, re.IGNORECASE)
+        if match:
+            delta = delta_func(match)
+            # For "after" filters, we want the start of the period
+            result = now - delta
+            # Return start of day for consistency
+            return result.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Try parsing as ISO format date/datetime
+    for fmt in ["%Y-%m-%d", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d"]:
+        try:
+            return datetime.datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+
+    raise ValueError(
+        f"Cannot parse date '{date_str}'. Use ISO format (YYYY-MM-DD) or "
+        f"relative format (e.g., 'last 7 days', 'last week', 'yesterday')"
+    )
 
 
 @dataclass
@@ -427,19 +490,35 @@ def create_table_schema() -> pa.Schema:
     )
 
 
-def search_memories(query: str, limit: int = 5, model=None, table=None) -> list[dict]:
+def search_memories(
+    query: str,
+    limit: int = 5,
+    model=None,
+    table=None,
+    after: Union[str, datetime.datetime, None] = None,
+    before: Union[str, datetime.datetime, None] = None,
+) -> list[dict]:
     """
-    Search for memories similar to the query.
+    Search for memories similar to the query with optional date filtering.
 
     Args:
         query: Search query text
         limit: Maximum number of results
         model: SentenceTransformer model (loads if not provided)
         table: LanceDB table (connects if not provided)
+        after: Only return results after this date. Accepts:
+            - ISO format string: "2024-01-15" or "2024-01-15T14:30:00"
+            - Relative string: "last 7 days", "last week", "last month", "yesterday"
+            - datetime object
+        before: Only return results before this date. Same formats as 'after'.
 
     Returns:
         List of matching chunks with metadata
     """
+    # Parse date filters
+    after_dt = parse_date_filter(after)
+    before_dt = parse_date_filter(before)
+
     # Load model if not provided
     if model is None:
         model = SentenceTransformer(EMBEDDING_MODEL, trust_remote_code=True)
@@ -455,8 +534,20 @@ def search_memories(query: str, limit: int = 5, model=None, table=None) -> list[
     # Embed query
     query_vector = model.encode(f"search_query: {query}")
 
-    # Search
-    results = table.search(query_vector).metric("cosine").limit(limit).to_pandas()
+    # Build search with optional date filters
+    search = table.search(query_vector).metric("cosine")
+
+    # Apply date filters using LanceDB SQL-based filtering
+    # start_timestamp is stored as ISO format string, which sorts lexicographically
+    if after_dt is not None:
+        after_iso = after_dt.isoformat()
+        search = search.where(f"start_timestamp >= '{after_iso}'")
+
+    if before_dt is not None:
+        before_iso = before_dt.isoformat()
+        search = search.where(f"start_timestamp <= '{before_iso}'")
+
+    results = search.limit(limit).to_pandas()
 
     # Format results
     memories = []
@@ -491,12 +582,36 @@ def main():
         action="store_true",
         help="Skip copying chat.db (use existing local copy)",
     )
+    parser.add_argument(
+        "--after",
+        type=str,
+        help="Filter results after this date. Accepts ISO format (YYYY-MM-DD) or "
+        "relative format (e.g., 'last 7 days', 'last week', 'yesterday')",
+    )
+    parser.add_argument(
+        "--before",
+        type=str,
+        help="Filter results before this date. Accepts ISO format (YYYY-MM-DD) or "
+        "relative format (e.g., 'last 7 days', 'last week', 'yesterday')",
+    )
     args = parser.parse_args()
 
     # Handle search-only mode
     if args.search_only:
-        print(f"\n🔍 Searching for: '{args.search_only}'\n")
-        results = search_memories(args.search_only)
+        filter_info = []
+        if args.after:
+            filter_info.append(f"after: {args.after}")
+        if args.before:
+            filter_info.append(f"before: {args.before}")
+        filter_str = f" ({', '.join(filter_info)})" if filter_info else ""
+
+        print(f"\n🔍 Searching for: '{args.search_only}'{filter_str}\n")
+        try:
+            results = search_memories(args.search_only, after=args.after, before=args.before)
+        except ValueError as e:
+            print(f"❌ {e}")
+            return
+
         if not results:
             print("No results found.")
             return
@@ -551,8 +666,20 @@ def main():
     if not messages:
         print("\n✅ Database is up to date - no new messages to index")
         if args.search:
-            print(f"\n🔍 Searching for: '{args.search}'\n")
-            results = search_memories(args.search)
+            filter_info = []
+            if args.after:
+                filter_info.append(f"after: {args.after}")
+            if args.before:
+                filter_info.append(f"before: {args.before}")
+            filter_str = f" ({', '.join(filter_info)})" if filter_info else ""
+
+            print(f"\n🔍 Searching for: '{args.search}'{filter_str}\n")
+            try:
+                results = search_memories(args.search, after=args.after, before=args.before)
+            except ValueError as e:
+                print(f"❌ {e}")
+                return
+
             for i, mem in enumerate(results, 1):
                 print(f"━━━ Result {i} (distance: {mem['distance']:.4f}) ━━━")
                 print(
@@ -654,8 +781,21 @@ def main():
 
     # === Optional Search Test ===
     if args.search:
-        print(f"\n🔍 Searching for: '{args.search}'\n")
-        results = search_memories(args.search, model=model, table=table)
+        filter_info = []
+        if args.after:
+            filter_info.append(f"after: {args.after}")
+        if args.before:
+            filter_info.append(f"before: {args.before}")
+        filter_str = f" ({', '.join(filter_info)})" if filter_info else ""
+
+        print(f"\n🔍 Searching for: '{args.search}'{filter_str}\n")
+        try:
+            results = search_memories(
+                args.search, model=model, table=table, after=args.after, before=args.before
+            )
+        except ValueError as e:
+            print(f"❌ {e}")
+            return
 
         for i, mem in enumerate(results, 1):
             print(f"━━━ Result {i} (distance: {mem['distance']:.4f}) ━━━")

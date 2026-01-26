@@ -10,6 +10,7 @@ A local, privacy-first semantic search engine for macOS. Like Spotlight, but sma
 
 - **Semantic Search**: Find messages by meaning, not just keywords ("dinner plans" finds "let's grab food tonight")
 - **Conversational Context**: Messages are chunked into conversation blocks, preserving context for better retrieval
+- **Date/Time Filtering**: Filter searches by date range ("last week", "2024-01-01 to 2024-01-31")
 - **RAG Chat**: Ask questions about your messages using a local LLM (Llama 3.2)
 - **Privacy-First**: All data stays on your device. No cloud, no external APIs
 - **Apple Silicon Optimized**: Runs efficiently on M1/M2/M3 Macs
@@ -54,7 +55,25 @@ python data-ingestion/imessages.py --search "dinner plans"
 
 # Search only (skip indexing)
 python data-ingestion/imessages.py --search-only "vacation photos"
+
+# Search with date filters (works with --search or --search-only)
+python data-ingestion/imessages.py --search-only "dinner" --after "last week"
+python data-ingestion/imessages.py --search-only "meeting" --after "2024-01-01" --before "2024-01-31"
+python data-ingestion/imessages.py --search-only "plans" --after "last 7 days"
 ```
+
+### Date Filtering
+
+Filter search results by date using the `--after` and `--before` flags:
+
+**Relative formats:**
+- `last 7 days`, `last 30 days`
+- `last week`, `last month`, `last year`
+- `yesterday`, `today`
+
+**Absolute formats:**
+- `2024-01-15` (ISO date)
+- `2024-01-15T14:30:00` (ISO datetime)
 
 ### 4. Chat with RAG
 
@@ -69,6 +88,10 @@ ollama serve
 
 # Run the chat interface
 python data-ingestion/chat.py
+
+# Run with date filters (only search messages from a specific time range)
+python data-ingestion/chat.py --after "last week"
+python data-ingestion/chat.py --after "2024-01-01" --before "2024-06-30"
 ```
 
 The chat will automatically pull the `llama3.2` model on first run.
@@ -109,11 +132,42 @@ smart-spotlight-search-mlx/
 ├── data-ingestion/
 │   ├── imessages.py      # Index iMessages with sliding window chunking
 │   └── chat.py           # RAG chat interface with Llama 3.2
+├── tests/
+│   ├── conftest.py       # Pytest fixtures with test database
+│   └── test_imessages.py # Unit tests for ingestion pipeline
 ├── assets/               # Screenshots and demo images
 ├── chat-history/         # Local copy of chat.db (gitignored, auto-created)
 ├── lancedb/              # Vector database storage (gitignored)
 └── requirements.txt
 ```
+
+## Running Tests
+
+The project includes a comprehensive test suite for the ingestion pipeline:
+
+```bash
+# Run all tests
+pytest
+
+# Run with verbose output
+pytest -v
+
+# Run a specific test class
+pytest tests/test_imessages.py::TestParseDateFilter -v
+
+# Run tests with coverage (if pytest-cov is installed)
+pytest --cov=data-ingestion
+```
+
+### Test Coverage
+
+The test suite covers:
+- **Chunk size limits**: Ensures chunks never exceed 7 messages
+- **Chat isolation**: Messages from different chats are never mixed
+- **Temporal blocking**: >30 min gaps correctly split conversations
+- **Noise filtering**: Reactions and short messages excluded from embeddings
+- **Sliding window overlap**: Consecutive chunks share overlapping messages
+- **Date filter parsing**: Relative ("last week") and absolute ("2024-01-15") formats
 
 ## Technical Details
 
@@ -156,7 +210,7 @@ smart-spotlight-search-mlx/
   - [ ] Safari browsing history
   - [ ] Notes app
 - [ ] Build a native macOS UI (SwiftUI menubar app)
-- [ ] Add date/time filtering to search queries
+- [x] Add date/time filtering to search queries
 - [ ] Hybrid search (combine semantic + keyword matching)
 - [ ] Scheduled background indexing
 - [ ] Add Whatsapp, Telegram messengers
