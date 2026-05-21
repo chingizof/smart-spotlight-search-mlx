@@ -16,7 +16,7 @@ TOOLS = [
         "function": {
             "name": "search_messages",
             "description": (
-                "Semantically search the user's message history (iMessage and WhatsApp). "
+                "Semantically search the user's message history (iMessage, WhatsApp, Telegram). "
                 "Use for questions about past conversations, people, plans, events, "
                 "or anything the user might have discussed in messages. "
                 "Results are merged and ranked across all indexed sources."
@@ -50,9 +50,9 @@ TOOLS = [
         "function": {
             "name": "graph_search",
             "description": (
-                "Search message history (iMessage + WhatsApp) using a knowledge graph with "
-                "Personalized PageRank. Best for multi-hop queries — finding connections between "
-                "people, places, and events across all indexed sources."
+                "Search message history (iMessage, WhatsApp, Telegram) using a knowledge graph "
+                "with Personalized PageRank. Best for multi-hop queries — finding connections "
+                "between people, places, and events across all indexed sources."
             ),
             "parameters": {
                 "type": "object",
@@ -98,7 +98,7 @@ TOOLS = [
 
 SYSTEM_PROMPT = """You are a helpful personal assistant that can search the user's message history.
 
-Indexed sources: iMessage, WhatsApp (any others that have been ingested).
+Indexed sources: iMessage, WhatsApp, Telegram (any others that have been ingested).
 
 You have three search tools:
 - search_messages: semantic/vector search across all message sources (good for topics, themes, events)

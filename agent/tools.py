@@ -27,6 +27,13 @@ def search_messages(query: str, after: str = None, before: str = None, limit: in
     except Exception:
         pass
 
+    try:
+        from telegram import search_telegram
+        tg = search_telegram(query, limit=limit, after=after, before=before)
+        all_results.extend(tg)
+    except Exception:
+        pass
+
     if not all_results:
         return "No relevant messages found."
 
