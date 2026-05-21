@@ -5,5 +5,7 @@ lancedb
 pyarrow
 pandas
 ollama
+fastapi
+uvicorn
 ruff
 pytest
