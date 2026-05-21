@@ -9,17 +9,35 @@ from imessages import search_memories as _search_memories
 
 
 def search_messages(query: str, after: str = None, before: str = None, limit: int = 5) -> str:
-    try:
-        results = _search_memories(query, limit=limit, after=after, before=before)
-    except Exception as e:
-        return f"Search error: {e}"
+    """Search across all indexed message sources (iMessage + WhatsApp), ranked by relevance."""
+    all_results = []
 
-    if not results:
+    try:
+        imsg = _search_memories(query, limit=limit, after=after, before=before)
+        for r in imsg:
+            r["source"] = "iMessage"
+        all_results.extend(imsg)
+    except Exception:
+        pass
+
+    try:
+        from whatsapp import search_whatsapp
+        wa = search_whatsapp(query, limit=limit, after=after, before=before)
+        all_results.extend(wa)
+    except Exception:
+        pass
+
+    if not all_results:
         return "No relevant messages found."
 
+    all_results.sort(key=lambda r: r["distance"])
+    top = all_results[:limit]
+
     parts = []
-    for i, mem in enumerate(results, 1):
-        header = f"[{mem['start_time']} – {mem['end_time']}] ({mem['message_count']} messages)"
+    for i, mem in enumerate(top, 1):
+        source = mem.get("source", "")
+        tag = f" [{source}]" if source else ""
+        header = f"[{mem['start_time']} – {mem['end_time']}]{tag} ({mem['message_count']} messages)"
         parts.append(f"Result {i} {header}\n{mem['text']}")
 
     return "\n\n---\n\n".join(parts)

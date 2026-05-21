@@ -16,9 +16,10 @@ TOOLS = [
         "function": {
             "name": "search_messages",
             "description": (
-                "Semantically search the user's iMessage conversation history. "
+                "Semantically search the user's message history (iMessage and WhatsApp). "
                 "Use for questions about past conversations, people, plans, events, "
-                "or anything the user might have discussed in messages."
+                "or anything the user might have discussed in messages. "
+                "Results are merged and ranked across all indexed sources."
             ),
             "parameters": {
                 "type": "object",
@@ -49,9 +50,9 @@ TOOLS = [
         "function": {
             "name": "graph_search",
             "description": (
-                "Search iMessage history using a knowledge graph with Personalized PageRank. "
-                "Best for multi-hop queries — finding connections between people, places, and events. "
-                "Complements semantic search by following topic relationships rather than just similarity."
+                "Search message history (iMessage + WhatsApp) using a knowledge graph with "
+                "Personalized PageRank. Best for multi-hop queries — finding connections between "
+                "people, places, and events across all indexed sources."
             ),
             "parameters": {
                 "type": "object",
@@ -95,15 +96,18 @@ TOOLS = [
     },
 ]
 
-SYSTEM_PROMPT = """You are a helpful personal assistant that can search the user's iMessage history.
+SYSTEM_PROMPT = """You are a helpful personal assistant that can search the user's message history.
+
+Indexed sources: iMessage, WhatsApp (any others that have been ingested).
 
 You have three search tools:
-- search_messages: semantic/vector search over iMessage conversations (good for topics, themes, events)
+- search_messages: semantic/vector search across all message sources (good for topics, themes, events)
 - graph_search: knowledge-graph search using Personalized PageRank (good for connections between people, places, recurring topics)
 - grep: exact text search over local files (good for specific names, exact phrases, keywords)
 
+Results include a [source] tag (e.g. [iMessage] or [WhatsApp Chat with Alice]) so you can attribute answers correctly.
 Always use at least one tool before answering a question that requires looking up information.
-Include source timestamps in your answer when relevant. Be concise and direct."""
+Include source and timestamps in your answer when relevant. Be concise and direct."""
 
 
 def _run_tool(name: str, args: dict) -> str:
