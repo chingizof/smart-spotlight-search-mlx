@@ -142,7 +142,7 @@ def add_chunk_to_graph(
 
     for category, names in topics.items():
         for name in names:
-            if not name:
+            if not name or not name.strip():
                 continue
             tid = topic_node_id(category, name)
             chunk_topic_ids.append(tid)
