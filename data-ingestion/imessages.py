@@ -569,16 +569,19 @@ def search_memories(
     return memories
 
 
-def build_graph_index(chunks: list[Chunk]) -> None:
+def build_graph_index(chunks: list[Chunk], model) -> None:
     """
     Build or incrementally update the knowledge graph from a list of Chunk objects.
     Skips chunks already present in the graph (resumable after interruption).
+    `model` is the already-loaded SentenceTransformer used for chunk embedding.
     """
     from graph_index import (
         add_chunk_to_graph,
+        add_semantic_topic_edges,
         chunk_node_id,
         extract_speaker_names,
         load_graph,
+        recompute_idf_weights,
         save_graph,
     )
     from topic_extract import extract_topics
@@ -590,12 +593,13 @@ def build_graph_index(chunks: list[Chunk]) -> None:
     for node, attrs in G.nodes(data=True):
         if attrs.get("type") == "chunk":
             cid = attrs.get("chat_id", -1)
-            # Keep the most recent (largest timestamp) per chat
             cur = prev_node_by_chat.get(cid)
             if cur is None or node > cur:
                 prev_node_by_chat[cid] = node
 
     new_count = 0
+    all_new_topic_ids: list[str] = []
+
     for chunk in tqdm(chunks, desc="Building graph index", unit="chunk"):
         node_id = chunk_node_id(chunk.chat_id, chunk.start_timestamp)
 
@@ -603,13 +607,9 @@ def build_graph_index(chunks: list[Chunk]) -> None:
             prev_node_by_chat[chunk.chat_id] = node_id
             continue
 
-        # Speaker names: free, no LLM
         speakers = extract_speaker_names(chunk.raw_text)
-
-        # LLM topic extraction
         topics = extract_topics(chunk.raw_text)
 
-        # Merge speakers into the people list (deduplicated)
         existing_people_lower = {p.lower() for p in topics["people"]}
         for name in speakers:
             if name.lower() not in existing_people_lower:
@@ -618,7 +618,7 @@ def build_graph_index(chunks: list[Chunk]) -> None:
         start_time = datetime.datetime.fromtimestamp(chunk.start_timestamp).isoformat()
         end_time = datetime.datetime.fromtimestamp(chunk.end_timestamp).isoformat()
 
-        add_chunk_to_graph(
+        new_topic_ids = add_chunk_to_graph(
             G=G,
             node_id=node_id,
             raw_text=chunk.raw_text,
@@ -626,17 +626,23 @@ def build_graph_index(chunks: list[Chunk]) -> None:
             start_time=start_time,
             end_time=end_time,
             chat_id=chunk.chat_id,
+            model=model,
             prev_node_id=prev_node_by_chat.get(chunk.chat_id),
         )
 
+        all_new_topic_ids.extend(new_topic_ids)
         prev_node_by_chat[chunk.chat_id] = node_id
         new_count += 1
 
     if new_count > 0:
+        print(f"  Adding semantic topic edges...")
+        sem_edges = add_semantic_topic_edges(G, all_new_topic_ids)
+        print(f"  Recomputing IDF weights...")
+        recompute_idf_weights(G)
         save_graph(G)
         print(
-            f"✓ Graph index updated: {new_count} new chunks added, "
-            f"{G.number_of_nodes()} total nodes, {G.number_of_edges()} edges"
+            f"✓ Graph updated: {new_count} chunks, "
+            f"{len(all_new_topic_ids)} new topics, {sem_edges} semantic edges added"
         )
     else:
         print("✓ Graph index already up to date")
@@ -649,9 +655,11 @@ def build_graph_index_from_lancedb() -> None:
     """
     from graph_index import (
         add_chunk_to_graph,
+        add_semantic_topic_edges,
         chunk_node_id,
         extract_speaker_names,
         load_graph,
+        recompute_idf_weights,
         save_graph,
     )
     from topic_extract import extract_topics
@@ -665,10 +673,14 @@ def build_graph_index_from_lancedb() -> None:
     df = table.to_pandas()
     print(f"📊 Found {len(df)} chunks in LanceDB to process")
 
+    print(f"🧠 Loading embedding model: {EMBEDDING_MODEL}")
+    model = SentenceTransformer(EMBEDDING_MODEL, trust_remote_code=True)
+
     G = load_graph()
     prev_node_by_chat: dict[int, str] = {}
-
     new_count = 0
+    all_new_topic_ids: list[str] = []
+
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Building graph index", unit="chunk"):
         start_dt = datetime.datetime.fromisoformat(row["start_timestamp"])
         node_id = chunk_node_id(int(row["chat_id"]), start_dt.timestamp())
@@ -686,7 +698,7 @@ def build_graph_index_from_lancedb() -> None:
             if name.lower() not in existing_lower:
                 topics["people"].append(name)
 
-        add_chunk_to_graph(
+        new_topic_ids = add_chunk_to_graph(
             G=G,
             node_id=node_id,
             raw_text=raw_text,
@@ -694,16 +706,23 @@ def build_graph_index_from_lancedb() -> None:
             start_time=row["start_timestamp"],
             end_time=row["end_timestamp"],
             chat_id=int(row["chat_id"]),
+            model=model,
             prev_node_id=prev_node_by_chat.get(int(row["chat_id"])),
         )
+        all_new_topic_ids.extend(new_topic_ids)
         prev_node_by_chat[int(row["chat_id"])] = node_id
         new_count += 1
 
     if new_count > 0:
+        print(f"  Adding semantic topic edges...")
+        sem_edges = add_semantic_topic_edges(G, all_new_topic_ids)
+        print(f"  Recomputing IDF weights...")
+        recompute_idf_weights(G)
         save_graph(G)
         print(
-            f"✓ Graph built: {new_count} chunks indexed, "
-            f"{G.number_of_nodes()} total nodes, {G.number_of_edges()} edges"
+            f"✓ Graph built: {new_count} chunks, "
+            f"{len(all_new_topic_ids)} new topics, {sem_edges} semantic edges, "
+            f"{G.number_of_nodes()} total nodes"
         )
     else:
         print("✓ Graph index already up to date")
@@ -939,7 +958,7 @@ def main():
     # === Knowledge Graph Indexing ===
     if not args.skip_graph:
         print("\n🕸  Building knowledge graph index...")
-        build_graph_index(all_chunks)
+        build_graph_index(all_chunks, model=model)
     else:
         print("\n⏭  Skipping graph index (--skip-graph)")
 

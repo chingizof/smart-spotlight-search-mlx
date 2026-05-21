@@ -5,6 +5,7 @@ lancedb
 pyarrow
 pandas
 networkx
+scipy
 ollama
 fastapi
 uvicorn
