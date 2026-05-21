@@ -6,7 +6,7 @@ Covers:
 - Speaker name extraction
 - add_chunk_to_graph: node/edge creation, embedding storage, return value
 - Temporal edges between consecutive chunks
-- recompute_idf_weights: formula correctness, ordering, minimum value
+- recompute_bm25_weights: TF/IDF weighting, ordering, floor value
 - add_semantic_topic_edges: threshold, bidirectionality, edge type
 - ppr_search: seed selection, ranking, string fallback, result structure
 - save_graph / load_graph round-trip
@@ -36,7 +36,7 @@ from graph_index import (
     extract_speaker_names,
     load_graph,
     ppr_search,
-    recompute_idf_weights,
+    recompute_bm25_weights,
     save_graph,
     topic_node_id,
 )
@@ -285,73 +285,142 @@ class TestTemporalEdges:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# IDF weight recomputation
+# BM25 weight recomputation
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class TestIdfWeights:
-    def _build_graph(self, chunk_topic_pairs: list[tuple[str, str]]) -> nx.DiGraph:
-        """Build a graph with chunks and their topics, then recompute IDF."""
+class TestBm25Weights:
+    """
+    Tests for recompute_bm25_weights.
+
+    Each chunk's raw_text must actually contain the topic words so BM25 can
+    compute a real TF score. The helper below wires everything up.
+    """
+
+    def _chunk(self, G, cid, text):
+        G.add_node(cid, type="chunk", raw_text=text,
+                   start_time="", end_time="", chat_id=1)
+
+    def _topic(self, G, name, category="topics"):
+        tid = topic_node_id(category, name)
+        if not G.has_node(tid):
+            G.add_node(tid, type="topic", name=name, category=category)
+        return tid
+
+    def _link(self, G, chunk_id, topic_id):
+        for a, b in ((chunk_id, topic_id), (topic_id, chunk_id)):
+            G.add_edge(a, b, weight=1.0, edge_type="mentions")
+
+    # ── weights are set ──────────────────────────────────────────────────────
+
+    def test_weights_set_after_recompute(self):
+        """Weights are updated from 1.0 to a real BM25 value."""
         G = nx.DiGraph()
-        for chunk_id, topic_name in chunk_topic_pairs:
-            if not G.has_node(chunk_id):
-                G.add_node(chunk_id, type="chunk", raw_text="x",
-                           start_time="", end_time="", chat_id=1)
-            tid = topic_node_id("topics", topic_name)
-            if not G.has_node(tid):
-                G.add_node(tid, type="topic", name=topic_name, category="topics")
-            for a, b in ((chunk_id, tid), (tid, chunk_id)):
-                G.add_edge(a, b, weight=1.0, edge_type="mentions")
-        recompute_idf_weights(G)
-        return G
+        self._chunk(G, "chunk:1:1", "let's have dinner tonight")
+        tid = self._topic(G, "dinner", "events")
+        self._link(G, "chunk:1:1", tid)
 
-    def test_idf_always_at_least_one(self):
-        """Smooth IDF formula guarantees weight >= 1.0 even when topic is in all chunks."""
-        G = self._build_graph([
-            ("chunk:1:1", "work"),
-            ("chunk:1:2", "work"),
-            ("chunk:1:3", "work"),
-        ])
-        w = G["chunk:1:1"]["topics:work"]["weight"]
-        assert w >= 1.0
+        recompute_bm25_weights(G)
 
-    def test_rare_topic_has_higher_weight_than_common(self):
-        # "dinner" appears in 1 of 3 chunks; "work" appears in all 3
-        G = self._build_graph([
-            ("chunk:1:1", "dinner"),
-            ("chunk:1:2", "work"),
-            ("chunk:1:3", "work"),
-        ])
-        # Also add work to chunk 1 so graph has both topics
-        G.add_edge("chunk:1:1", "topics:work", weight=1.0, edge_type="mentions")
-        G.add_edge("topics:work", "chunk:1:1", weight=1.0, edge_type="mentions")
-        recompute_idf_weights(G)
+        w = G["chunk:1:1"][tid]["weight"]
+        assert w > 0
 
-        w_dinner = G["chunk:1:1"]["topics:dinner"]["weight"]
-        w_work = G["topics:work"]["chunk:1:2"]["weight"]
-        assert w_dinner > w_work, f"Rare topic should score higher: {w_dinner} vs {w_work}"
+    def test_weight_always_above_floor(self):
+        """BM25 score can be near zero for ubiquitous topics; floor prevents that."""
+        G = nx.DiGraph()
+        for i in range(3):
+            cid = f"chunk:1:{i}"
+            self._chunk(G, cid, f"work project {i}")
+            tid = self._topic(G, "work")
+            self._link(G, cid, tid)
 
-    def test_idf_formula_exact(self):
-        """IDF = log((N+1)/(df+1)) + 1 where N=total chunks, df=chunks with topic."""
-        G = self._build_graph([
-            ("chunk:1:1", "dinner"),   # dinner appears in 1/3 chunks
-            ("chunk:1:2", "work"),
-            ("chunk:1:3", "work"),
-        ])
-        N, df = 3, 1
-        expected = math.log((N + 1) / (df + 1)) + 1.0
-        actual = G["chunk:1:1"]["topics:dinner"]["weight"]
-        assert abs(actual - expected) < 1e-9
+        recompute_bm25_weights(G, floor=0.1)
+
+        for u, v, d in G.edges(data=True):
+            if d.get("edge_type") == "mentions":
+                assert d["weight"] >= 0.1, f"Edge {u}→{v} weight {d['weight']} below floor"
+
+    # ── IDF component ────────────────────────────────────────────────────────
+
+    def test_rare_topic_scores_higher_than_ubiquitous_topic(self):
+        """A topic in fewer chunks should have higher weight than one in all chunks."""
+        G = nx.DiGraph()
+        # chunk:1:1 mentions BOTH dinner (rare) and work (ubiquitous)
+        self._chunk(G, "chunk:1:1", "work project and dinner tonight")
+        self._chunk(G, "chunk:1:2", "work project again")
+        self._chunk(G, "chunk:1:3", "work project again")
+
+        t_dinner = self._topic(G, "dinner", "events")
+        t_work   = self._topic(G, "work")
+
+        # dinner only in chunk:1:1; work in all three
+        self._link(G, "chunk:1:1", t_dinner)
+        for cid in ("chunk:1:1", "chunk:1:2", "chunk:1:3"):
+            self._link(G, cid, t_work)
+
+        recompute_bm25_weights(G)
+
+        w_dinner = G["chunk:1:1"][t_dinner]["weight"]
+        w_work   = G["chunk:1:1"][t_work]["weight"]
+        assert w_dinner > w_work, (
+            f"Rare 'dinner' ({w_dinner:.4f}) should score higher than "
+            f"ubiquitous 'work' ({w_work:.4f})"
+        )
+
+    # ── TF component ─────────────────────────────────────────────────────────
+
+    def test_higher_tf_gives_higher_score(self):
+        """Chunk with more topic occurrences in its text should score higher."""
+        G = nx.DiGraph()
+        self._chunk(G, "chunk:1:1", "let's have dinner tonight")          # dinner ×1
+        self._chunk(G, "chunk:1:2", "dinner dinner dinner every night")   # dinner ×3
+        # Background chunks (not linked to "dinner") keep df < 50% so IDF stays positive
+        self._chunk(G, "chunk:1:3", "work meeting today")
+        self._chunk(G, "chunk:1:4", "project update submitted")
+        self._chunk(G, "chunk:1:5", "see you tomorrow morning")
+
+        tid = self._topic(G, "dinner", "events")
+        self._link(G, "chunk:1:1", tid)
+        self._link(G, "chunk:1:2", tid)
+
+        recompute_bm25_weights(G)
+
+        w1 = G["chunk:1:1"][tid]["weight"]
+        w2 = G["chunk:1:2"][tid]["weight"]
+        assert w2 > w1, f"More occurrences should score higher: {w2:.4f} vs {w1:.4f}"
+
+    def test_tf_saturates(self):
+        """BM25 TF saturation: 10 occurrences shouldn't score 10× a single occurrence."""
+        G = nx.DiGraph()
+        self._chunk(G, "chunk:1:1", "dinner")                         # dinner ×1
+        self._chunk(G, "chunk:1:2", " ".join(["dinner"] * 10))        # dinner ×10
+        # Background chunks keep "dinner" IDF positive (df < 50% of corpus)
+        self._chunk(G, "chunk:1:3", "work meeting today")
+        self._chunk(G, "chunk:1:4", "project update submitted")
+        self._chunk(G, "chunk:1:5", "see you tomorrow morning")
+
+        tid = self._topic(G, "dinner", "events")
+        self._link(G, "chunk:1:1", tid)
+        self._link(G, "chunk:1:2", tid)
+
+        recompute_bm25_weights(G)
+
+        w1 = G["chunk:1:1"][tid]["weight"]
+        w2 = G["chunk:1:2"][tid]["weight"]
+        assert w2 > w1                  # TF still helps
+        assert w2 < 10 * w1            # but saturates (BM25 asymptote ≈ k1+1 = 2.5)
+
+    # ── other edge types untouched ───────────────────────────────────────────
 
     def test_temporal_edges_not_modified(self):
         G = nx.DiGraph()
         make_chunk(G, "chunk:1:1000", empty_topics())
         make_chunk(G, "chunk:1:2000", empty_topics(), prev_node_id="chunk:1:1000")
         original_w = G["chunk:1:1000"]["chunk:1:2000"]["weight"]
-        recompute_idf_weights(G)
+        recompute_bm25_weights(G)
         assert G["chunk:1:1000"]["chunk:1:2000"]["weight"] == original_w
 
     def test_empty_graph_no_crash(self):
-        recompute_idf_weights(nx.DiGraph())  # must not raise
+        recompute_bm25_weights(nx.DiGraph())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -601,7 +670,7 @@ class TestGraphPersistence:
             G = nx.DiGraph()
             make_chunk(G, "chunk:1:1000",
                        {"people": [], "places": [], "events": ["dinner"], "topics": []})
-            recompute_idf_weights(G)
+            recompute_bm25_weights(G)
             w_before = G["chunk:1:1000"]["events:dinner"]["weight"]
             save_graph(G)
             G2 = load_graph()

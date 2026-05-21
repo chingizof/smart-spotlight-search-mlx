@@ -10,4 +10,5 @@ ollama
 fastapi
 uvicorn
 ruff
+rank-bm25
 pytest

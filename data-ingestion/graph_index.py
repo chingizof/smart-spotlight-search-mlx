@@ -12,7 +12,7 @@ Nodes
                      embedding (list[float], stored as plain list for JSON)
 
 Edges (all bidirectional)
-  chunk ↔ topic   edge_type="mentions"   weight=IDF(topic)  [set by recompute_idf_weights]
+  chunk ↔ topic   edge_type="mentions"   weight=BM25(topic, chunk)  [set by recompute_bm25_weights]
   topic ↔ topic   edge_type="co_occurs"  weight=co-occurrence count
   topic ↔ topic   edge_type="semantic"   weight=cosine_similarity  [added by add_semantic_topic_edges]
   chunk ↔ chunk   edge_type="temporal"   weight=1
@@ -25,10 +25,12 @@ ppr_search(G, query, model?)
   → seed PPR from top-K similar topics
   → return top-N chunk nodes by PPR score
 
-IDF weighting
--------------
-recompute_idf_weights(G)   call once after a batch of add_chunk_to_graph calls.
-  weight(chunk↔topic) = log((total_chunks + 1) / (chunks_mentioning_topic + 1))
+BM25 weighting
+--------------
+recompute_bm25_weights(G)   call once after a batch of add_chunk_to_graph calls.
+  BM25 improves on plain IDF with:
+  - TF saturation: repeated topic mentions have diminishing returns (k1 parameter)
+  - Document length normalisation: long chunks don't gain unfair advantage (b parameter)
 
 Semantic topic edges
 --------------------
@@ -38,7 +40,6 @@ add_semantic_topic_edges(G, new_topic_ids, threshold=0.5)
 """
 
 import json
-import math
 import re
 from pathlib import Path
 from typing import Optional
@@ -239,38 +240,71 @@ def add_semantic_topic_edges(
     return added
 
 
-def recompute_idf_weights(G: nx.DiGraph) -> None:
+def recompute_bm25_weights(
+    G: nx.DiGraph,
+    k1: float = 1.5,
+    b: float = 0.75,
+    floor: float = 0.1,
+) -> None:
     """
-    Set chunk↔topic edge weights to IDF scores.
+    Set chunk↔topic "mentions" edge weights to BM25 scores.
 
-    IDF(topic) = log((total_chunks + 1) / (chunks_mentioning_topic + 1))
+    For each (chunk, topic) pair the weight is BM25(chunk | topic_name), where
+    the corpus is all chunk raw_texts and the query is the topic name tokens.
 
-    Topics appearing in many chunks get low weight (common signal).
-    Topics appearing in few chunks get high weight (specific signal).
+    BM25 improves on plain IDF:
+    - TF saturation (k1):  mentioning "dinner" 10× isn't 10× better than once
+    - Length normalisation (b): long chunks don't win just for being verbose
+
+    Args:
+        G:     knowledge graph
+        k1:    TF saturation parameter (default 1.5)
+        b:     length normalisation parameter (default 0.75; 0 = off)
+        floor: minimum weight applied after BM25 (keeps zero-IDF edges in PPR)
     """
-    total_chunks = sum(1 for _, d in G.nodes(data=True) if d.get("type") == "chunk")
-    if total_chunks == 0:
+    try:
+        from rank_bm25 import BM25Okapi
+    except ImportError as exc:
+        raise ImportError("Install rank-bm25: pip install rank-bm25") from exc
+
+    chunk_items = [
+        (n, d["raw_text"])
+        for n, d in G.nodes(data=True)
+        if d.get("type") == "chunk" and d.get("raw_text")
+    ]
+    if not chunk_items:
         return
 
+    chunk_ids, texts = zip(*chunk_items)
+    chunk_pos = {cid: i for i, cid in enumerate(chunk_ids)}
+
+    # Tokenise corpus: lowercase word tokens, strip punctuation
+    tokenized = [re.findall(r"\b\w+\b", t.lower()) for t in texts]
+    bm25 = BM25Okapi(tokenized, k1=k1, b=b)
+
+    # Score each topic against all chunks, update "mentions" edge weights
     for topic_node, attrs in G.nodes(data=True):
         if attrs.get("type") != "topic":
             continue
 
-        chunk_neighbors = [
-            n for n in G.neighbors(topic_node)
-            if G.nodes[n].get("type") == "chunk"
-        ]
-        df = len(chunk_neighbors)
-        if df == 0:
+        query = re.findall(r"\b\w+\b", attrs.get("name", "").lower())
+        if not query:
             continue
 
-        # Smooth IDF: +1 ensures weight >= 1 even when topic appears in every chunk
-        idf = math.log((total_chunks + 1) / (df + 1)) + 1.0
+        scores = bm25.get_scores(query)   # ndarray shape (n_chunks,)
 
-        for chunk_node in chunk_neighbors:
-            for a, b in ((topic_node, chunk_node), (chunk_node, topic_node)):
-                if G.has_edge(a, b) and G[a][b].get("edge_type") == "mentions":
-                    G[a][b]["weight"] = idf
+        for chunk_node in G.neighbors(topic_node):
+            if G.nodes[chunk_node].get("type") != "chunk":
+                continue
+            pos = chunk_pos.get(chunk_node)
+            if pos is None:
+                continue
+
+            weight = max(float(scores[pos]), floor)
+
+            for a, c in ((topic_node, chunk_node), (chunk_node, topic_node)):
+                if G.has_edge(a, c) and G[a][c].get("edge_type") == "mentions":
+                    G[a][c]["weight"] = weight
 
 
 def extract_speaker_names(raw_text: str) -> list[str]:

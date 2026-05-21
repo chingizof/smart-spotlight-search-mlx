@@ -581,7 +581,7 @@ def build_graph_index(chunks: list[Chunk], model) -> None:
         chunk_node_id,
         extract_speaker_names,
         load_graph,
-        recompute_idf_weights,
+        recompute_bm25_weights,
         save_graph,
     )
     from topic_extract import extract_topics
@@ -638,7 +638,7 @@ def build_graph_index(chunks: list[Chunk], model) -> None:
         print(f"  Adding semantic topic edges...")
         sem_edges = add_semantic_topic_edges(G, all_new_topic_ids)
         print(f"  Recomputing IDF weights...")
-        recompute_idf_weights(G)
+        recompute_bm25_weights(G)
         save_graph(G)
         print(
             f"✓ Graph updated: {new_count} chunks, "
@@ -659,7 +659,7 @@ def build_graph_index_from_lancedb() -> None:
         chunk_node_id,
         extract_speaker_names,
         load_graph,
-        recompute_idf_weights,
+        recompute_bm25_weights,
         save_graph,
     )
     from topic_extract import extract_topics
@@ -717,7 +717,7 @@ def build_graph_index_from_lancedb() -> None:
         print(f"  Adding semantic topic edges...")
         sem_edges = add_semantic_topic_edges(G, all_new_topic_ids)
         print(f"  Recomputing IDF weights...")
-        recompute_idf_weights(G)
+        recompute_bm25_weights(G)
         save_graph(G)
         print(
             f"✓ Graph built: {new_count} chunks, "
