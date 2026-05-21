@@ -4,6 +4,7 @@ pyobjc-framework-Contacts
 lancedb
 pyarrow
 pandas
+networkx
 ollama
 fastapi
 uvicorn

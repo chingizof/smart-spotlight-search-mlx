@@ -26,6 +26,7 @@ from typing import Optional, Union
 
 import pyarrow as pa
 from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 
 # === Configuration ===
 SYSTEM_CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
@@ -568,6 +569,146 @@ def search_memories(
     return memories
 
 
+def build_graph_index(chunks: list[Chunk]) -> None:
+    """
+    Build or incrementally update the knowledge graph from a list of Chunk objects.
+    Skips chunks already present in the graph (resumable after interruption).
+    """
+    from graph_index import (
+        add_chunk_to_graph,
+        chunk_node_id,
+        extract_speaker_names,
+        load_graph,
+        save_graph,
+    )
+    from topic_extract import extract_topics
+
+    G = load_graph()
+    prev_node_by_chat: dict[int, str] = {}
+
+    # Seed prev_node_by_chat from existing graph so temporal edges stay connected
+    for node, attrs in G.nodes(data=True):
+        if attrs.get("type") == "chunk":
+            cid = attrs.get("chat_id", -1)
+            # Keep the most recent (largest timestamp) per chat
+            cur = prev_node_by_chat.get(cid)
+            if cur is None or node > cur:
+                prev_node_by_chat[cid] = node
+
+    new_count = 0
+    for chunk in tqdm(chunks, desc="Building graph index", unit="chunk"):
+        node_id = chunk_node_id(chunk.chat_id, chunk.start_timestamp)
+
+        if G.has_node(node_id):
+            prev_node_by_chat[chunk.chat_id] = node_id
+            continue
+
+        # Speaker names: free, no LLM
+        speakers = extract_speaker_names(chunk.raw_text)
+
+        # LLM topic extraction
+        topics = extract_topics(chunk.raw_text)
+
+        # Merge speakers into the people list (deduplicated)
+        existing_people_lower = {p.lower() for p in topics["people"]}
+        for name in speakers:
+            if name.lower() not in existing_people_lower:
+                topics["people"].append(name)
+
+        start_time = datetime.datetime.fromtimestamp(chunk.start_timestamp).isoformat()
+        end_time = datetime.datetime.fromtimestamp(chunk.end_timestamp).isoformat()
+
+        add_chunk_to_graph(
+            G=G,
+            node_id=node_id,
+            raw_text=chunk.raw_text,
+            topics=topics,
+            start_time=start_time,
+            end_time=end_time,
+            chat_id=chunk.chat_id,
+            prev_node_id=prev_node_by_chat.get(chunk.chat_id),
+        )
+
+        prev_node_by_chat[chunk.chat_id] = node_id
+        new_count += 1
+
+    if new_count > 0:
+        save_graph(G)
+        print(
+            f"✓ Graph index updated: {new_count} new chunks added, "
+            f"{G.number_of_nodes()} total nodes, {G.number_of_edges()} edges"
+        )
+    else:
+        print("✓ Graph index already up to date")
+
+
+def build_graph_index_from_lancedb() -> None:
+    """
+    Retroactively build the graph from an existing LanceDB table.
+    Useful when vector indexing was done before the graph was introduced.
+    """
+    from graph_index import (
+        add_chunk_to_graph,
+        chunk_node_id,
+        extract_speaker_names,
+        load_graph,
+        save_graph,
+    )
+    from topic_extract import extract_topics
+
+    db = lancedb.connect(LANCEDB_PATH)
+    if TABLE_NAME not in db.table_names():
+        print(f"❌ Table '{TABLE_NAME}' not found. Run indexing first.")
+        return
+
+    table = db.open_table(TABLE_NAME)
+    df = table.to_pandas()
+    print(f"📊 Found {len(df)} chunks in LanceDB to process")
+
+    G = load_graph()
+    prev_node_by_chat: dict[int, str] = {}
+
+    new_count = 0
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Building graph index", unit="chunk"):
+        start_dt = datetime.datetime.fromisoformat(row["start_timestamp"])
+        node_id = chunk_node_id(int(row["chat_id"]), start_dt.timestamp())
+
+        if G.has_node(node_id):
+            prev_node_by_chat[int(row["chat_id"])] = node_id
+            continue
+
+        raw_text = row["raw_text"]
+        speakers = extract_speaker_names(raw_text)
+        topics = extract_topics(raw_text)
+
+        existing_lower = {p.lower() for p in topics["people"]}
+        for name in speakers:
+            if name.lower() not in existing_lower:
+                topics["people"].append(name)
+
+        add_chunk_to_graph(
+            G=G,
+            node_id=node_id,
+            raw_text=raw_text,
+            topics=topics,
+            start_time=row["start_timestamp"],
+            end_time=row["end_timestamp"],
+            chat_id=int(row["chat_id"]),
+            prev_node_id=prev_node_by_chat.get(int(row["chat_id"])),
+        )
+        prev_node_by_chat[int(row["chat_id"])] = node_id
+        new_count += 1
+
+    if new_count > 0:
+        save_graph(G)
+        print(
+            f"✓ Graph built: {new_count} chunks indexed, "
+            f"{G.number_of_nodes()} total nodes, {G.number_of_edges()} edges"
+        )
+    else:
+        print("✓ Graph index already up to date")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Index iMessages into LanceDB with sliding window chunking"
@@ -594,7 +735,23 @@ def main():
         help="Filter results before this date. Accepts ISO format (YYYY-MM-DD) or "
         "relative format (e.g., 'last 7 days', 'last week', 'yesterday')",
     )
+    parser.add_argument(
+        "--skip-graph",
+        action="store_true",
+        help="Skip knowledge graph indexing (faster, vector search only)",
+    )
+    parser.add_argument(
+        "--build-graph-only",
+        action="store_true",
+        help="Build/update the knowledge graph from the existing LanceDB index (no message re-ingestion)",
+    )
     args = parser.parse_args()
+
+    # Handle build-graph-only mode
+    if args.build_graph_only:
+        print("\n🕸  Building knowledge graph from existing LanceDB index...")
+        build_graph_index_from_lancedb()
+        return
 
     # Handle search-only mode
     if args.search_only:
@@ -778,6 +935,13 @@ def main():
 
     print(f"📊 Total chunks in database: {table.count_rows()}")
     print(f"📁 Database location: ./{LANCEDB_PATH}/")
+
+    # === Knowledge Graph Indexing ===
+    if not args.skip_graph:
+        print("\n🕸  Building knowledge graph index...")
+        build_graph_index(all_chunks)
+    else:
+        print("\n⏭  Skipping graph index (--skip-graph)")
 
     # === Optional Search Test ===
     if args.search:

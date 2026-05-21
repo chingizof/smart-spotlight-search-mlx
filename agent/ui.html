@@ -241,7 +241,7 @@
   const afterEl    = document.getElementById('after');
   const beforeEl   = document.getElementById('before');
 
-  const TOOL_ICONS = { search_messages: '🔍', grep: '🔎' };
+  const TOOL_ICONS = { search_messages: '🔍', graph_search: '🕸', grep: '🔎' };
 
   function scrollBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -291,14 +291,12 @@
   }
 
   function labelFor(type, tool) {
-    if (type === 'tool_call') {
-      return tool === 'search_messages' ? 'Searching messages…' : 'Running grep…';
-    }
-    if (type === 'result') {
-      return tool === 'search_messages' ? 'Messages retrieved' : 'Grep results';
-    }
+    const labels = {
+      tool_call: { search_messages: 'Searching messages…', graph_search: 'Graph search (PPR)…', grep: 'Running grep…' },
+      result:    { search_messages: 'Messages retrieved',  graph_search: 'Graph results',        grep: 'Grep results'  },
+    };
     if (type === 'error-step') return 'Error';
-    return tool;
+    return (labels[type] || {})[tool] || tool;
   }
 
   function escHtml(str) {

@@ -6,7 +6,7 @@ from typing import Generator
 import ollama
 
 sys.path.insert(0, str(Path(__file__).parent))
-from tools import search_messages, grep
+from tools import graph_search, grep, search_messages
 
 MODEL = "llama3.2"
 
@@ -47,6 +47,31 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "graph_search",
+            "description": (
+                "Search iMessage history using a knowledge graph with Personalized PageRank. "
+                "Best for multi-hop queries — finding connections between people, places, and events. "
+                "Complements semantic search by following topic relationships rather than just similarity."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Query containing names, places, or topics to seed the graph search",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "Number of results to return (default 5)",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "grep",
             "description": (
                 "Search for exact text patterns in local files using grep. "
@@ -72,8 +97,9 @@ TOOLS = [
 
 SYSTEM_PROMPT = """You are a helpful personal assistant that can search the user's iMessage history.
 
-You have two search tools:
+You have three search tools:
 - search_messages: semantic/vector search over iMessage conversations (good for topics, themes, events)
+- graph_search: knowledge-graph search using Personalized PageRank (good for connections between people, places, recurring topics)
 - grep: exact text search over local files (good for specific names, exact phrases, keywords)
 
 Always use at least one tool before answering a question that requires looking up information.
@@ -81,10 +107,13 @@ Include source timestamps in your answer when relevant. Be concise and direct.""
 
 
 def _run_tool(name: str, args: dict) -> str:
+    clean = {k: v for k, v in args.items() if v is not None}
     if name == "search_messages":
-        return search_messages(**{k: v for k, v in args.items() if v is not None})
+        return search_messages(**clean)
+    if name == "graph_search":
+        return graph_search(**clean)
     if name == "grep":
-        return grep(**{k: v for k, v in args.items() if v is not None})
+        return grep(**clean)
     return f"Unknown tool: {name}"
 
 
